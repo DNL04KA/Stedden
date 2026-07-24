@@ -1,0 +1,47 @@
+[project]
+name = "stedden-backend"
+version = "0.1.0"
+description = "Stedden — AI receptionist for independent US med spas"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    "openai>=1.55",
+    "sqlalchemy>=2.0",
+    "alembic>=1.14",
+    "psycopg[binary]>=3.2",
+    "resend>=2.4",
+    "httpx>=0.27",
+    "websockets>=13.1",
+    "structlog>=24.4",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.7",
+    "mypy>=1.13",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["."]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+plugins = ["pydantic.mypy"]
