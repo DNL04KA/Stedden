@@ -65,10 +65,21 @@ def _print_turn(view: TurnView) -> None:
     print(f"  {DIM}lead:{RESET}     {json.dumps(view.lead.model_dump(mode='json'))}")
 
 
-def _build_session() -> ConversationSession:
+def _generator():
     settings = get_settings()
-    kb = lumera_kb()
+    from openai import AsyncOpenAI
 
+    from core.llm import OpenAITurnGenerator
+
+    return OpenAITurnGenerator(
+        AsyncOpenAI(api_key=settings.openai_api_key),
+        model=settings.openai_model,
+        timeout=settings.openai_timeout_seconds,
+    )
+
+
+def _build_session() -> ConversationSession:
+    kb = lumera_kb()
     data = lumera_internal_dataset()
     internal = ProviderBundle(
         customer=InMemoryCustomerProvider(data),
@@ -76,29 +87,94 @@ def _build_session() -> ConversationSession:
         notification=InMemoryNotificationProvider(data),
     )
     providers = resolve_providers(lumera_provider_config(), bundles={STEDDEN_INTERNAL: internal})
+    return ConversationSession(kb, _generator(), ActionEngine(), providers)
 
-    from openai import AsyncOpenAI
 
-    from core.llm import OpenAITurnGenerator
+async def _build_persistent_session() -> tuple[ConversationSession, PersistHooks]:
+    """SQL providers + call/transcript/action-log persistence in Postgres."""
+    from zoneinfo import ZoneInfo
 
-    generator = OpenAITurnGenerator(
-        AsyncOpenAI(api_key=settings.openai_api_key),
-        model=settings.openai_model,
-        timeout=settings.openai_timeout_seconds,
+    from db.base import get_sessionmaker
+    from db.repository import add_message, create_call
+    from providers.sql_internal import (
+        SqlCustomerProvider,
+        SqlNotificationProvider,
+        SqlSchedulingProvider,
     )
-    return ConversationSession(kb, generator, ActionEngine(), providers)
+    from seed.seed_db import ensure_seeded
+
+    kb = lumera_kb()
+    sm = get_sessionmaker()
+    await ensure_seeded(sm)
+
+    tz = ZoneInfo(kb.timezone)
+    internal = ProviderBundle(
+        customer=SqlCustomerProvider(sm, kb.business_id, tz),
+        scheduling=SqlSchedulingProvider(sm, kb.business_id, tz),
+        notification=SqlNotificationProvider(sm, kb.business_id, tz),
+    )
+    providers = resolve_providers(lumera_provider_config(), bundles={STEDDEN_INTERNAL: internal})
+
+    call_id = await create_call(sm, business_id=kb.business_id)
+
+    async def sink(role: str, content: str, state, seq: int) -> None:
+        await add_message(sm, call_id=call_id, seq=seq, role=role, content=content, state=state)
+
+    session = ConversationSession(
+        kb, _generator(), ActionEngine(), providers, call_id=str(call_id), message_sink=sink
+    )
+    return session, PersistHooks(sm=sm, business_id=kb.business_id, call_id=call_id)
 
 
-async def _amain() -> None:
+class PersistHooks:
+    """Per-turn action-log persistence + call completion for the CLI loop."""
+
+    def __init__(self, sm, business_id: str, call_id) -> None:
+        self._sm = sm
+        self._business_id = business_id
+        self.call_id = call_id
+        self._seq = 0
+        self._audit_len = 0
+
+    async def after_turn(self, view: TurnView) -> None:
+        from db.repository import save_action_records
+
+        self._seq = await save_action_records(
+            self._sm,
+            business_id=self._business_id,
+            call_id=self.call_id,
+            records=view.actions,
+            start_seq=self._seq,
+        )
+
+    async def on_end(self) -> None:
+        from db.repository import mark_call_completed
+
+        await mark_call_completed(self._sm, call_id=self.call_id)
+
+
+async def _amain(persist: bool) -> None:
     settings = get_settings()
     if not settings.openai_api_key:
         print(f"{RED}OPENAI_API_KEY is not set. Add it to backend/.env.{RESET}", file=sys.stderr)
         raise SystemExit(1)
 
-    session = _build_session()
+    hooks: PersistHooks | None = None
+    if persist:
+        session, hooks = await _build_persistent_session()
+    else:
+        session = _build_session()
+
     kb = session.kb
     print(f"{BOLD}Stedden simulator — {kb.name}{RESET}  {DIM}(Ctrl-D or 'quit' to end){RESET}")
-    print(f"{DIM}source of truth: Stedden internal · today books against a real calendar{RESET}")
+    mode = (
+        "Postgres (call, transcript, customers, appointments, action log)"
+        if persist
+        else "in-memory"
+    )
+    print(f"{DIM}source of truth: Stedden internal · persistence: {mode}{RESET}")
+    if hooks is not None:
+        print(f"{DIM}call_id: {hooks.call_id}{RESET}")
 
     greeting = await session.open_with_greeting()
     print(f"\n{BOLD}{CYAN}Assistant:{RESET} {greeting}")
@@ -116,14 +192,29 @@ async def _amain() -> None:
 
         view = await session.send(user_text)
         _print_turn(view)
+        if hooks is not None:
+            await hooks.after_turn(view)
         if view.result.should_end_call:
             print(f"\n{DIM}— call ended —{RESET}")
             break
 
+    if hooks is not None:
+        await hooks.on_end()
+        print(f"{DIM}call {hooks.call_id} marked completed in Postgres{RESET}")
+
 
 def main() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Stedden text simulator")
+    parser.add_argument(
+        "--persist",
+        action="store_true",
+        help="use SQL providers and persist call, transcript, and action log to Postgres",
+    )
+    args = parser.parse_args()
     _configure_logging(get_settings().log_level)
-    asyncio.run(_amain())
+    asyncio.run(_amain(args.persist))
 
 
 if __name__ == "__main__":

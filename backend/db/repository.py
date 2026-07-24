@@ -9,7 +9,8 @@ from datetime import UTC, datetime
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from core.schemas import ConversationState
-from db.models import Call, TranscriptMessage
+from db.models import ActionLog, Call, TranscriptMessage
+from engine.context import ActionRecord
 
 
 async def create_call(
@@ -51,3 +52,41 @@ async def add_message(
                 state=state.value,
             )
         )
+
+
+async def save_action_records(
+    sm: async_sessionmaker[AsyncSession],
+    *,
+    business_id: str,
+    call_id: uuid.UUID,
+    records: list[ActionRecord],
+    start_seq: int,
+) -> int:
+    """Persist Action Engine audit records for one turn. Returns the next seq."""
+    if not records:
+        return start_seq
+    async with sm() as session, session.begin():
+        for offset, record in enumerate(records):
+            session.add(
+                ActionLog(
+                    business_id=uuid.UUID(business_id),
+                    call_id=call_id,
+                    seq=start_seq + offset,
+                    action=record.action,
+                    args=record.args,
+                    status=record.status,
+                    result=record.result,
+                    provider=record.provider,
+                    external_ref=record.external_ref,
+                    error=record.error,
+                )
+            )
+    return start_seq + len(records)
+
+
+async def mark_call_completed(sm: async_sessionmaker[AsyncSession], *, call_id: uuid.UUID) -> None:
+    async with sm() as session, session.begin():
+        call = await session.get(Call, call_id)
+        if call is not None and call.status != "completed":
+            call.status = "completed"
+            call.ended_at = datetime.now(UTC)
