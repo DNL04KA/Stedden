@@ -64,28 +64,62 @@ stedden/
 
 ```bash
 # 1. Backend deps (uv)
-cd backend && uv sync
-
-# 2. Bring up Postgres + both services
-cd .. && docker compose up --build
-
-# 3. Talk to the Brain WITHOUT a phone (build order step 1)
-cd backend && uv run stedden-sim
+cd backend && uv sync --extra dev
 ```
 
-- `api` → http://localhost:8000
-- `voice_worker` (Twilio WSS target) → http://localhost:8080
+```bash
+# 2. Database: migrations + Lumera seed (Homebrew Postgres or docker compose up db)
+cd backend && createdb stedden && uv run alembic upgrade head && uv run python -m seed.seed_db
+```
+
+```bash
+# 3. Talk to the AI front desk WITHOUT a phone
+cd backend && uv run stedden-sim --persist
+```
+
+```bash
+# 4. Run the services
+cd backend && uv run uvicorn voice_worker.main:app --port 8080 --reload
+```
+
+- `api` → http://localhost:8000 · `voice_worker` (Twilio WSS target) → http://localhost:8080
 - Copy `backend/.env.example` → `backend/.env` and fill in keys.
+
+## Taking a real phone call
+
+Twilio must reach the voice worker over a public HTTPS/WSS URL.
+
+```bash
+cloudflared tunnel --url http://localhost:8080
+```
+
+1. Put the tunnel origin in `backend/.env` as `PUBLIC_BASE_URL` (e.g.
+   `https://abc-123.trycloudflare.com`) — the TwiML's `wss://` URL is derived
+   from it — and restart the worker.
+2. Twilio Console → your number → **A call comes in**: Webhook, HTTP POST,
+   `https://<tunnel>/voice/incoming`.
+3. **Call status changes** → `https://<tunnel>/voice/status` (HTTP POST).
+4. Set `TWILIO_AUTH_TOKEN` so webhook signatures are verified (403 otherwise).
+5. Call the number. Twilio speaks the greeting, then opens a WebSocket to
+   `/voice/relay`; every caller utterance runs through the same Brain → Action
+   Engine → providers path as the text simulator.
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/voice/incoming` | POST | Inbound-call webhook → `<ConversationRelay>` TwiML |
+| `/voice/status` | POST | Call status callback; authoritative for completion |
+| `/voice/relay` | WS | ConversationRelay session (text in, text out) |
+| `/health` | GET | Liveness + active call count |
 
 ## Build order
 
 The Brain is proven by typing before any telephony is wired:
 
-1. ✅ Core contracts (FSM states, Lead, TurnResult, Action) — `core/schemas.py`
-2. Brain + Tool Executor + **text simulator**
-3. Database + migrations + Lumera seed
-4. Admin API + Next.js panel
-5. Twilio ConversationRelay + Resend
+1. ✅ Core contracts (FSM states, Lead, TurnResult, actions) — `core/schemas.py`
+2. ✅ Brain + Action Engine + **text simulator**
+3. ✅ Database + migrations + Lumera seed + SQL providers
+4. ✅ Twilio ConversationRelay voice worker
+5. Admin API + Next.js panel
 6. Deploy (Railway + Vercel + Supabase)
 
 ## Compliance (MVP)

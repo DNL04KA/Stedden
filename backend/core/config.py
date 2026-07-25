@@ -26,6 +26,20 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4.1"
     openai_timeout_seconds: float = 8.0
 
+    # Twilio + ConversationRelay. Twilio owns audio, STT and TTS; we own the text
+    # Brain. These configure the <ConversationRelay> TwiML the webhook returns.
+    twilio_auth_token: str = ""
+    # Reject webhooks whose X-Twilio-Signature doesn't match. Enforced whenever an
+    # auth token is configured; leave the token empty only for local dev.
+    twilio_validate_signature: bool = True
+    conversation_relay_tts_provider: str = "ElevenLabs"
+    conversation_relay_voice: str = ""
+    conversation_relay_stt_provider: str = "Deepgram"
+    conversation_relay_language: str = "en-US"
+    # Server-side inactivity handling (ConversationRelay sends no silence events).
+    voice_silence_prompt_seconds: float = 12.0
+    voice_silence_hangup_seconds: float = 24.0
+
     # Resend — lead notification email.
     resend_api_key: str = ""
     lead_email_from: str = "receptionist@stedden.ai"

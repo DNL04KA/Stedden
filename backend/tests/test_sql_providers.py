@@ -13,9 +13,6 @@ Skipped automatically when PostgreSQL is not reachable.
 
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
 import uuid
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -41,14 +38,12 @@ from providers.sql_internal import (
 from seed.lumera import LUMERA_BUSINESS_ID, lumera_kb, lumera_provider_config
 from seed.seed_db import ensure_seeded
 from simulator.session import ConversationSession
+from tests.conftest import TRUNCATE_SQL, postgres_available
 from tests.fakes import ScriptedGenerator, ScriptedTurn, ToolCall
 
-TEST_DB = "stedden_test"
-TEST_DB_URL = f"postgresql+psycopg://localhost:5432/{TEST_DB}"
 TZ = ZoneInfo("America/New_York")
 
-_pg_up = subprocess.run(["pg_isready", "-q"], check=False).returncode == 0
-pytestmark = pytest.mark.skipif(not _pg_up, reason="PostgreSQL is not running")
+pytestmark = pytest.mark.skipif(not postgres_available, reason="PostgreSQL is not running")
 
 
 def next_weekday(target: int) -> date:
@@ -62,32 +57,13 @@ FRIDAY = next_weekday(4)
 SUNDAY = next_weekday(6)
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _migrated_test_db() -> None:
-    subprocess.run(["createdb", TEST_DB], check=False, capture_output=True)
-    env = {**os.environ, "DATABASE_URL": TEST_DB_URL}
-    result = subprocess.run(
-        [sys.executable, "-m", "alembic", "upgrade", "head"],
-        env=env,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, f"alembic upgrade failed:\n{result.stderr}"
-
-
 @pytest.fixture
-async def sm():
+async def sm(migrated_test_db: str):
     """Fresh engine per test (per event loop), truncated and re-seeded schema."""
-    engine = create_async_engine(TEST_DB_URL)
+    engine = create_async_engine(migrated_test_db)
     maker = async_sessionmaker(bind=engine, expire_on_commit=False)
     async with engine.begin() as conn:
-        await conn.execute(
-            text(
-                "TRUNCATE action_log, task, appointment, customer_note, customer, "
-                "staff_hours, staff, business_hours, notification, lead, "
-                "transcript_message, call, policy, faq, service, business CASCADE"
-            )
-        )
+        await conn.execute(text(TRUNCATE_SQL))
     await ensure_seeded(maker)
     yield maker
     await engine.dispose()
