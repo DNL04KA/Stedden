@@ -21,7 +21,16 @@ class Settings(BaseSettings):
     # Database (Supabase Postgres). psycopg3 URL works for async via SQLAlchemy.
     database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/stedden"
 
-    # OpenAI — the Brain. Isolated so a faster model is a one-line env change.
+    # The Brain. `llm_provider` selects the backend; only that provider's key is
+    # required, so running on Gemini needs no OpenAI credentials.
+    llm_provider: str = "gemini"  # gemini | openai
+
+    # Gemini (default). Flash is chosen for latency: a phone turn has ~500ms.
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-2.5-flash"
+    gemini_timeout_seconds: float = 8.0
+
+    # OpenAI — optional alternative.
     openai_api_key: str = ""
     openai_model: str = "gpt-4.1"
     openai_timeout_seconds: float = 8.0

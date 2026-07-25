@@ -18,6 +18,21 @@ Caller → Twilio number → ConversationRelay (Deepgram STT + ElevenLabs TTS)
          → Postgres (Supabase) + Resend email + Next.js admin
 ```
 
+### The Brain's LLM is swappable
+
+`LLM_PROVIDER` selects the backend behind the `TurnGenerator` protocol; nothing
+else in the system knows which model is running. **Gemini
+(`gemini-2.5-flash`) is the default** — chosen for latency, since a phone turn
+has roughly 500ms of budget. OpenAI remains available as an alternative, and its
+key is not required when running on Gemini.
+
+Gemini cannot combine function tools with a strict `response_schema`, so a turn
+runs in two phases: first the model may *request* business actions (executed by
+our Action Engine, never by the SDK — automatic function calling is disabled),
+then it produces the structured `TurnResult` with tools off. Either way the
+output is re-validated against Pydantic and illegal FSM transitions are clamped
+by deterministic code.
+
 Three separable pieces:
 
 1. **The Brain** (`backend/core`) — a *pure function*: `(knowledge base + history +
@@ -73,8 +88,16 @@ cd backend && createdb stedden && uv run alembic upgrade head && uv run python -
 ```
 
 ```bash
-# 3. Talk to the AI front desk WITHOUT a phone
+# 3. Talk to the AI front desk WITHOUT a phone (needs GEMINI_API_KEY)
 cd backend && uv run stedden-sim --persist
+```
+
+Try: *"I'd like Botox this Friday"* → the AI asks for your name and number,
+checks **real** availability, books, and confirms. Then verify it actually
+happened:
+
+```bash
+psql -d stedden -c "select name, phone from customer" -c "select service, start_at, status from appointment" -c "select seq, action, status from action_log order by seq"
 ```
 
 ```bash

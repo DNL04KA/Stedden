@@ -121,6 +121,7 @@ class VoiceSessionManager:
 def build_sql_runtime() -> VoiceRuntime:
     """Production wiring: Lumera on Stedden-internal SQL providers."""
     from core.config import get_settings
+    from core.llm_factory import build_generator
     from db.base import get_sessionmaker
     from providers.registry import STEDDEN_INTERNAL, ProviderBundle, resolve_providers
     from providers.sql_internal import (
@@ -144,15 +145,8 @@ def build_sql_runtime() -> VoiceRuntime:
     providers = resolve_providers(lumera_provider_config(), bundles={STEDDEN_INTERNAL: bundle})
 
     def generator_factory() -> TurnGenerator:
-        from openai import AsyncOpenAI
-
-        from core.llm import OpenAITurnGenerator
-
-        return OpenAITurnGenerator(
-            AsyncOpenAI(api_key=settings.openai_api_key),
-            model=settings.openai_model,
-            timeout=settings.openai_timeout_seconds,
-        )
+        # Per call, so each conversation gets its own client state.
+        return build_generator(settings)
 
     return VoiceRuntime(
         kb=kb,

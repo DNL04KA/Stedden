@@ -18,6 +18,7 @@ import sys
 import structlog
 
 from core.config import get_settings
+from core.llm_factory import LLMConfigurationError, build_generator, describe_provider
 from engine.engine import ActionEngine
 from providers.internal import (
     InMemoryCustomerProvider,
@@ -66,16 +67,8 @@ def _print_turn(view: TurnView) -> None:
 
 
 def _generator():
-    settings = get_settings()
-    from openai import AsyncOpenAI
-
-    from core.llm import OpenAITurnGenerator
-
-    return OpenAITurnGenerator(
-        AsyncOpenAI(api_key=settings.openai_api_key),
-        model=settings.openai_model,
-        timeout=settings.openai_timeout_seconds,
-    )
+    """The Brain's LLM backend, selected by LLM_PROVIDER."""
+    return build_generator(get_settings())
 
 
 def _build_session() -> ConversationSession:
@@ -155,15 +148,15 @@ class PersistHooks:
 
 async def _amain(persist: bool) -> None:
     settings = get_settings()
-    if not settings.openai_api_key:
-        print(f"{RED}OPENAI_API_KEY is not set. Add it to backend/.env.{RESET}", file=sys.stderr)
-        raise SystemExit(1)
-
     hooks: PersistHooks | None = None
-    if persist:
-        session, hooks = await _build_persistent_session()
-    else:
-        session = _build_session()
+    try:
+        if persist:
+            session, hooks = await _build_persistent_session()
+        else:
+            session = _build_session()
+    except LLMConfigurationError as exc:
+        print(f"{RED}{exc}{RESET}", file=sys.stderr)
+        raise SystemExit(1) from exc
 
     kb = session.kb
     print(f"{BOLD}Stedden simulator — {kb.name}{RESET}  {DIM}(Ctrl-D or 'quit' to end){RESET}")
@@ -172,6 +165,7 @@ async def _amain(persist: bool) -> None:
         if persist
         else "in-memory"
     )
+    print(f"{DIM}brain: {describe_provider(settings)}{RESET}")
     print(f"{DIM}source of truth: Stedden internal · persistence: {mode}{RESET}")
     if hooks is not None:
         print(f"{DIM}call_id: {hooks.call_id}{RESET}")
